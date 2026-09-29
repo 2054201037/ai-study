@@ -1,6 +1,6 @@
 import os
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import psycopg2
@@ -19,7 +19,7 @@ AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat")
 client = OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
 
 PERSONAS = {
-    "mentor": "你是一个幽默、专业的 AI 全栈开发导师。请用简明、鼓励的口吻，结合通俗生动的比喻回答用户的技术问题。",
+    "mentor": "你是一个幽默、专业的 AI 全栈开发导师。请用简明、鼓励的口吻，结合通俗生动的比喻回答用户的技术问题。如果有代码，请用 Markdown 格式规范包裹。",
     "english": "You are a friendly and patient native English coach. Always talk in English, give natural responses, and at the end of your reply, gently point out and correct any grammar or vocabulary mistakes in the user's input.",
     "interviewer": "你是一名严谨、专业的大厂技术面试官。请针对用户提出的概念进行深度考察，挖掘底层原理、边界场景，并给出专业且有深度的追问。",
     "roaster": "你是一个幽默犀利、毒舌但无恶意的脱口秀演员。用充满机智槽点、段子和吐槽的口吻回答用户，逗他们开心。"
@@ -47,46 +47,74 @@ def read_messages():
     conn.close()
     return {"code": 200, "data": data}
 
+# 新增：清空数据库历史记录接口
+@app.delete("/messages")
+def clear_messages():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("TRUNCATE TABLE chat_messages;")
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"code": 200, "message": "记忆已清空"}
+
 class MessageInput(BaseModel):
     content: str
     persona: str = "mentor"
 
+# 升级：打字机流式接口
 @app.post("/chat")
 def chat_with_ai(msg: MessageInput):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 提取数据库最近 6 轮历史记忆
+    # 读取最近 6 轮记忆
     cursor.execute("SELECT role, content FROM chat_messages ORDER BY id DESC LIMIT 6;")
     history_rows = cursor.fetchall()
     history_rows.reverse()
 
-    # 保存本次提问
+    # 存入本次用户提问
     cursor.execute("INSERT INTO chat_messages (role, content) VALUES (%s, %s);", ("user", msg.content))
     conn.commit()
+    cursor.close()
+    conn.close()
 
-    # 组装完整上下文（人设 + 历史对话 + 本次提问）
+    # 组装上下文
     system_prompt = PERSONAS.get(msg.persona, PERSONAS["mentor"])
     messages_payload = [{"role": "system", "content": system_prompt}]
     for r_role, r_content in history_rows:
         messages_payload.append({"role": r_role, "content": r_content})
     messages_payload.append({"role": "user", "content": msg.content})
 
-    try:
-        response = client.chat.completions.create(
-            model=AI_MODEL,
-            messages=messages_payload
-        )
-        ai_reply = response.choices[0].message.content
-    except Exception as e:
-        ai_reply = f"调用大模型出错，请检查 API Key：{str(e)}"
+    def event_stream():
+        full_reply = []
+        try:
+            stream = client.chat.completions.create(
+                model=AI_MODEL,
+                messages=messages_payload,
+                stream=True  # 开启大模型流式传输
+            )
+            for chunk in stream:
+                token = chunk.choices[0].delta.content or ""
+                if token:
+                    full_reply.append(token)
+                    yield token
+        except Exception as e:
+            err = f"\n[调用大模型出错：{str(e)}]"
+            full_reply.append(err)
+            yield err
+        finally:
+            # 流式传输完毕后，把整段回答完整入库持久化
+            complete_text = "".join(full_reply)
+            if complete_text:
+                db = get_db_connection()
+                c = db.cursor()
+                c.execute("INSERT INTO chat_messages (role, content) VALUES (%s, %s);", ("assistant", complete_text))
+                db.commit()
+                c.close()
+                db.close()
 
-    cursor.execute("INSERT INTO chat_messages (role, content) VALUES (%s, %s);", ("assistant", ai_reply))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    return {"code": 200, "user_question": msg.content, "ai_answer": ai_reply}
+    return StreamingResponse(event_stream(), media_type="text/plain; charset=utf-8")
 
 if __name__ == "__main__":
     import uvicorn
