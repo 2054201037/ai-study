@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的个人 AI 全栈助手 - 多角色记忆版</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 h-screen flex flex-col font-sans">
+  <header class="bg-white border-b border-gray-200 py-3 px-6 flex flex-wrap items-center justify-between shadow-sm gap-3">
+    <div class="flex items-center space-x-3">
+      <div id="role-avatar" class="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-sm">👨‍💻</div>
+      <div>
+        <h1 class="font-bold text-gray-800 text-base">我的专属 AI 全栈助手</h1>
+        <p class="text-xs text-green-600 flex items-center">
+          <span class="w-2 h-2 rounded-full bg-green-500 inline-block mr-1"></span>
+          已开启：多轮对话记忆 + 动态角色系统
+        </p>
+      </div>
+    </div>
+    <div class="flex items-center space-x-2 bg-gray-100 p-1 rounded-xl text-xs font-medium">
+      <button onclick="switchRole('mentor', '👨‍💻', '全栈技术导师')" id="btn-mentor" class="role-btn px-3 py-1.5 rounded-lg bg-white text-blue-600 shadow-sm transition">👨‍💻 技术导师</button>
+      <button onclick="switchRole('english', '🗣️', '英语口语私教')" id="btn-english" class="role-btn px-3 py-1.5 rounded-lg text-gray-600 hover:text-gray-900 transition">🗣️ 英语私教</button>
+      <button onclick="switchRole('interviewer', '💼', '大厂面试官')" id="btn-interviewer" class="role-btn px-3 py-1.5 rounded-lg text-gray-600 hover:text-gray-900 transition">💼 大厂面试官</button>
+      <button onclick="switchRole('roaster', '🎭', '脱口秀大师')" id="btn-roaster" class="role-btn px-3 py-1.5 rounded-lg text-gray-600 hover:text-gray-900 transition">🎭 脱口秀大师</button>
+    </div>
+  </header>
+  <main id="chat-box" class="flex-1 overflow-y-auto p-6 space-y-4 max-w-4xl w-full mx-auto"></main>
+  <footer class="bg-white border-t border-gray-200 p-4">
+    <div class="max-w-4xl mx-auto flex space-x-3">
+      <input id="user-input" type="text" placeholder="向你的专属 AI 提问... (按 Enter 发送)" class="flex-1 border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800 text-sm" />
+      <button id="send-btn" onclick="sendMessage()" class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-3 rounded-xl transition shadow-sm text-sm">发送</button>
+    </div>
+  </footer>
+  <script>
+    const chatBox = document.getElementById("chat-box");
+    const userInput = document.getElementById("user-input");
+    const sendBtn = document.getElementById("send-btn");
+    const roleAvatar = document.getElementById("role-avatar");
+    let currentRole = "mentor";
+
+    function switchRole(roleKey, icon, roleName) {
+      currentRole = roleKey;
+      roleAvatar.innerText = icon;
+      document.querySelectorAll(".role-btn").forEach(btn => {
+        btn.classList.remove("bg-white", "text-blue-600", "shadow-sm");
+        btn.classList.add("text-gray-600");
+      });
+      const activeBtn = document.getElementById(`btn-${roleKey}`);
+      activeBtn.classList.add("bg-white", "text-blue-600", "shadow-sm");
+      activeBtn.classList.remove("text-gray-600");
+      appendSystemNotice(`已切换为角色：【${roleName}】！`);
+    }
+
+    function appendSystemNotice(text) {
+      const div = document.createElement("div");
+      div.className = "flex justify-center";
+      div.innerHTML = `<span class="bg-gray-200 text-gray-600 text-xs px-3 py-1 rounded-full">${text}</span>`;
+      chatBox.appendChild(div);
+      scrollToBottom();
+    }
+
+    window.onload = async () => {
+      try {
+        const res = await fetch("/messages");
+        const data = await res.json();
+        if (data.code === 200) {
+          data.data.forEach(msg => appendMessage(msg.role, msg.content, false));
+          scrollToBottom();
+        }
+      } catch (err) { console.error(err); }
+    };
+
+    function appendMessage(role, content, shouldScroll = true) {
+      const isUser = role === "user";
+      const div = document.createElement("div");
+      div.className = `flex ${isUser ? "justify-end" : "justify-start"} items-start space-x-2`;
+      div.innerHTML = `
+        ${!isUser ? `<div class="w-8 h-8 rounded-full bg-blue-600 flex-shrink-0 flex items-center justify-center text-white text-xs font-bold">${roleAvatar.innerText}</div>` : ''}
+        <div class="max-w-[75%] rounded-2xl px-5 py-3 shadow-sm ${
+          isUser ? "bg-blue-600 text-white rounded-tr-none" : "bg-white text-gray-800 border border-gray-100 rounded-tl-none whitespace-pre-wrap leading-relaxed text-sm"
+        }">${content}</div>
+        ${isUser ? '<div class="w-8 h-8 rounded-full bg-gray-300 flex-shrink-0 flex items-center justify-center text-gray-700 text-xs font-bold">我</div>' : ''}
+      `;
+      chatBox.appendChild(div);
+      if (shouldScroll) scrollToBottom();
+      return div;
+    }
+
+    function scrollToBottom() { chatBox.scrollTop = chatBox.scrollHeight; }
+
+    async function sendMessage() {
+      const text = userInput.value.trim();
+      if (!text) return;
+      appendMessage("user", text);
+      userInput.value = "";
+      userInput.disabled = true;
+      sendBtn.disabled = true;
+
+      const loadingBubble = appendMessage("assistant", "🤖 正在检索记忆并思考中...");
+      try {
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: text, persona: currentRole })
+        });
+        const data = await res.json();
+        loadingBubble.querySelector("div:nth-child(2)").innerText = data.code === 200 ? data.ai_answer : "出错了：" + JSON.stringify(data);
+      } catch (err) {
+        loadingBubble.querySelector("div:nth-child(2)").innerText = "网络请求失败：" + err;
+      } finally {
+        userInput.disabled = false;
+        sendBtn.disabled = false;
+        userInput.focus();
+        scrollToBottom();
+      }
+    }
+
+    userInput.addEventListener("keypress", (e) => { if (e.key === "Enter") sendMessage(); });
+  </script>
+</body>
+</html>
